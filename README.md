@@ -1,16 +1,16 @@
-# AWD-Net
-This is the project of manuscript AWD-Net: Adaptive Wavelet Decomposition Network for Rotating Machinery Fault Diagnosis Under Noisy Environment, Ye Zhang, Aosheng Tian, Chao Ma, Shilin Zhou and Yulan Guo. **Our team will release more interesting works and applications on time series analysis. Please keep following our repository.**
+# LADDER
+This is the project of manuscript Learnable Wavelet Decomposition with Adaptive Routing for Noise-Robust Rotating Machinery Fault Diagnosis, Ye Zhang, Aosheng Tian, Boyang Li, Longguang Wang, Hanyun Wang, and Yulan Guo. **Our team will release more interesting works and applications on time series analysis. Please keep following our repository.**
 
 ![architechture](AWD-Net.png)
 
 ## Algorithm Introduction
 
-This paper proposes an **A**daptive **W**avelet  **D**ecomposition **Net**work (**AWD-Net**) for rotating machinery fault diagnosis under noisy environment.  The experimental results on three public datasets with  different noise intensities demonstrate the effectiveness of  the proposed method. The contributions of this paper are summarized as follows:
+This paper proposes an **L**earnable w**A**velet **D**ecomposition network with a**D**aptiv**E** **R**outing* (**LADDER**) for rotating machinery fault diagnosis under noisy environment. The experimental results on three public datasets with  different noise intensities demonstrate the effectiveness of  the proposed method. The contributions of this paper are summarized as follows:
 
-- We propose AWD-Net for rotating machinery fault diagnosis under noisy environment, which comprises a lifting  wavelet decomposition module and an adaptive wavelet  decomposition routing.
-- We design a lifting wavelet decomposition module, which  enhances the data adaptability of wavelet filters.
-- We construct an adaptive wavelet decomposition routing,  which effectively separates the noise components from  the fault-related parts.
-- Our proposed AWD-Net achieves superior anti-noise  performance on three public fault diagnosis datasets. Besides, the insightful analyses further demonstrate the  effectiveness of our method.
+- We propose LADDER, a learnable wavelet decomposition network for noise-robust rotating machinery fault diagnosis, which comprises a lifting wavelet decomposition module and an adaptive decomposition routing.
+- We introduce a lifting wavelet decomposition module with learnable prediction and update operators, thereby improving the data adaptivity of the decomposition filters at each level.
+- We construct a wavelet decomposition routing that adaptively selects subbands for further decomposition and determines a sample-specific decomposition readout level, enhancing fault-noise separability.
+- Extensive experiments across 6 public datasets and 6 noise levels demonstrate the superior noise robustness of LADDER, while ablation and interpretability analyses further validate its effectiveness.
 
 ## Prerequisite
 
