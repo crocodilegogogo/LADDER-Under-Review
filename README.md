@@ -8,7 +8,7 @@ Official PyTorch implementation of **“Learnable Wavelet Decomposition with Ada
 
 LADDER is a data-adaptive time-frequency model for fault diagnosis from noisy vibration signals. It combines learnable lifting-wavelet decomposition with Gumbel-Softmax routing so that the network can select which subbands should be decomposed further and at which level the representation should be read out.
 
-![image-20260910211847764](C:\Users\yunda\AppData\Roaming\Typora\typora-user-images\image-20260910211847764.png)
+![image-20260910211847764](LADDER.png)
 
 > **Repository status:** research code accompanying a manuscript under review.
 
