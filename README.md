@@ -1,4 +1,8 @@
 # LADDER
+<<<<<<< HEAD
+=======
+This is the project of manuscript Learnable Wavelet Decomposition with Adaptive Routing for Noise-Robust Rotating Machinery Fault Diagnosis, Ye Zhang, Aosheng Tian, Boyang Li, Longguang Wang, Hanyun Wang, and Yulan Guo. **Our team will release more interesting works and applications on time series analysis. Please keep following our repository.**
+>>>>>>> 699f8c67dc2dec68727358c580e7615df2091af8
 
 [![Python](https://img.shields.io/badge/Python-3.8-blue.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.4.1-ee4c2c.svg)](https://pytorch.org/)
@@ -6,9 +10,18 @@
 
 Official PyTorch implementation of **“Learnable Wavelet Decomposition with Adaptive Routing for Noise-Robust Rotating Machinery Fault Diagnosis.”**
 
+<<<<<<< HEAD
 LADDER is a data-adaptive time-frequency model for fault diagnosis from noisy vibration signals. It combines learnable lifting-wavelet decomposition with Gumbel-Softmax routing so that the network can select which subbands should be decomposed further and at which level the representation should be read out.
 
 ![image-20260910202055552](/home/zhangye/snap/typora/118/.config/Typora/typora-user-images/image-20260910202055552.png)
+=======
+This paper proposes an **L**earnable w**A**velet **D**ecomposition network with a**D**aptiv**E** **R**outing* (**LADDER**) for rotating machinery fault diagnosis under noisy environment. The experimental results on three public datasets with  different noise intensities demonstrate the effectiveness of  the proposed method. The contributions of this paper are summarized as follows:
+
+- We propose LADDER, a learnable wavelet decomposition network for noise-robust rotating machinery fault diagnosis, which comprises a lifting wavelet decomposition module and an adaptive decomposition routing.
+- We introduce a lifting wavelet decomposition module with learnable prediction and update operators, thereby improving the data adaptivity of the decomposition filters at each level.
+- We construct a wavelet decomposition routing that adaptively selects subbands for further decomposition and determines a sample-specific decomposition readout level, enhancing fault-noise separability.
+- Extensive experiments across 6 public datasets and 6 noise levels demonstrate the superior noise robustness of LADDER, while ablation and interpretability analyses further validate its effectiveness.
+>>>>>>> 699f8c67dc2dec68727358c580e7615df2091af8
 
 > **Repository status:** research code accompanying a manuscript under review.
 
@@ -261,3 +274,7 @@ For questions about the paper or code, please contact:
 
 - Ye Zhang: `zhangy2658@mail.sysu.edu.cn, yundazhangye@163.com`
 
+<<<<<<< HEAD
+=======
+  
+>>>>>>> 699f8c67dc2dec68727358c580e7615df2091af8
