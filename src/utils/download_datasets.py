@@ -19,6 +19,11 @@ run directly from the ``src`` directory::
 Large archives are kept under ``datasets/.downloads`` only while they are
 needed.  Set ``LADDER_KEEP_DATASET_ARCHIVES=1`` to retain them.
 
+For CWRU, the default ``legacy`` variant reproduces the historical LADDER
+``1750-0.000-Normal.mat`` file byte-for-byte.  Set
+``LADDER_CWRU_VARIANT=official`` (or use ``--cwru-variant official`` when this
+module is run directly) to retain CWRU's unmodified official ``99.mat`` file.
+
 The module downloads data from its providers; it does not grant additional
 rights to the datasets.  Review and follow each provider's terms and citation
 requirements before use or redistribution.
@@ -31,6 +36,7 @@ import hashlib
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -38,6 +44,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
+import zlib
 from pathlib import Path, PurePosixPath
 from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 
@@ -171,12 +178,25 @@ _MFPT_FILES: Tuple[str, ...] = (
     "InnerRaceFault_vload_7.mat",
 )
 
-# These are the 14 states consumed by the current PU preprocessing code.  The
-# manuscript describes K002-K006 as additional healthy states, but enabling
-# those here would silently change the experiment and sample count.
+# All 32 official Paderborn bearing experiments are downloaded so the local
+# PU directory mirrors the complete provider dataset.  This list controls only
+# dataset acquisition/readiness; the existing training ACT_LABELS and PU
+# preprocessing code continue to select the same experimental subset as before.
 _PU_LABELS: Tuple[str, ...] = (
     "K001",
+    "K002",
+    "K003",
+    "K004",
+    "K005",
+    "K006",
+    "KA01",
+    "KA03",
     "KA04",
+    "KA05",
+    "KA06",
+    "KA07",
+    "KA08",
+    "KA09",
     "KA15",
     "KA16",
     "KA22",
@@ -184,7 +204,13 @@ _PU_LABELS: Tuple[str, ...] = (
     "KB23",
     "KB24",
     "KB27",
+    "KI01",
+    "KI03",
     "KI04",
+    "KI05",
+    "KI07",
+    "KI08",
+    "KI14",
     "KI16",
     "KI17",
     "KI18",
@@ -193,9 +219,55 @@ _PU_LABELS: Tuple[str, ...] = (
 
 _IMS_TIMESTAMP = re.compile(r"^\d{4}\.\d{2}\.\d{2}\.\d{2}\.\d{2}\.\d{2}$")
 
+_IMS_EXPECTED_COUNTS: Dict[str, int] = {
+    "1st_test": 2156,
+    "2nd_test": 984,
+    "3rd_test": 6324,
+}
+
+_CWRU_VARIANT_ENV = "LADDER_CWRU_VARIANT"
+_CWRU_VARIANTS: Tuple[str, str] = ("legacy", "official")
+_CWRU_SPECIAL_FILENAME = "1750-0.000-Normal.mat"
+_CWRU_LEGACY_SPECIAL_SIZE = 3_896_927
+_CWRU_LEGACY_SPECIAL_SHA256 = (
+    "c5b8dfd42c408e6fd3bce4b7ed3754d1cbd36ca72f4e6c1ae365169ca7a4a41a"
+)
+_CWRU_OFFICIAL_SPECIAL_SIZE = 15_503_928
+_CWRU_OFFICIAL_SPECIAL_SHA256 = (
+    "4b97e6b5361f45efb6951dc3b1aebcdb3b89cb69d0f96d6f5c297dd9f45eee75"
+)
+
+
+def _cwru_variant() -> str:
+    """Return the requested CWRU layout, defaulting to LADDER's legacy copy."""
+
+    value = os.getenv(_CWRU_VARIANT_ENV, "legacy").strip().lower()
+    if value not in _CWRU_VARIANTS:
+        raise DatasetDownloadError(
+            f"{_CWRU_VARIANT_ENV} must be one of {_CWRU_VARIANTS}, got {value!r}."
+        )
+    return value
+
 
 def _cwru_ready(path: Path) -> bool:
-    return len(_regular_files(path, ".mat")) == 40
+    if len(_regular_files(path, ".mat")) != 40:
+        return False
+
+    special_file = path / _CWRU_SPECIAL_FILENAME
+    if not special_file.is_file():
+        return False
+
+    if _cwru_variant() == "legacy":
+        expected_size = _CWRU_LEGACY_SPECIAL_SIZE
+        expected_sha256 = _CWRU_LEGACY_SPECIAL_SHA256
+    else:
+        expected_size = _CWRU_OFFICIAL_SPECIAL_SIZE
+        expected_sha256 = _CWRU_OFFICIAL_SPECIAL_SHA256
+
+    return (
+        special_file.stat().st_size == expected_size
+        and _sha256_file(special_file) == expected_sha256
+    )
 
 
 def _xjtu_ready(path: Path) -> bool:
@@ -242,8 +314,7 @@ def _pu_ready(path: Path) -> bool:
 def _ims_ready(path: Path) -> bool:
     if not path.is_dir():
         return False
-    expected_counts = {"2nd_test": 984, "3rd_test": 6324}
-    for folder, expected_count in expected_counts.items():
+    for folder, expected_count in _IMS_EXPECTED_COUNTS.items():
         directory = path / folder
         if not directory.is_dir():
             return False
@@ -490,9 +561,145 @@ _CWRU_CONDITIONS: Tuple[Tuple[str, Tuple[int, int, int, int]], ...] = (
     ("0.021-OuterRace6", (234, 235, 236, 237)),
 )
 
+# Preserve the exact filename convention used by the original LADDER CWRU_10
+# directory.  The four entries correspond to the official CWRU 0, 1, 2 and
+# 3 hp files respectively; their nominal shaft speeds are 1797, 1772, 1750
+# and 1730 rpm.  The legacy CWRU preprocessor sorts these filenames
+# lexicographically, so retaining this convention is part of reproducing the
+# original experiment rather than merely a cosmetic rename.
+_CWRU_RPMS: Tuple[str, str, str, str] = ("1797", "1772", "1750", "1730")
+
+# CWRU's official 99.mat contains both X098 and X099.  The historical LADDER
+# file named 1750-0.000-Normal.mat retained only the X098 pair and was written
+# by MATLAB using zlib level 6 with a full flush every 8192 bytes.  The helper
+# below deliberately recreates that historical file exactly for reproducibility.
+# This is a compatibility choice, not a correction of the CWRU metadata: X099
+# is the signal that semantically belongs to the 1750-rpm condition.
+_CWRU_LEGACY_MATRIX_NAMES: Tuple[str, str] = (
+    "X098_DE_time",
+    "X098_FE_time",
+)
+_CWRU_LEGACY_MAT_HEADER = (
+    b"MATLAB 5.0 MAT-file, Platform: PCWIN64, Created on: "
+    b"Sun May 19 01:49:09 2019"
+).ljust(116, b" ") + (b"\x00" * 8) + b"\x00\x01IM"
+_MAT5_MI_MATRIX = 14
+_MAT5_MI_COMPRESSED = 15
+_MATLAB_ZLIB_CHUNK_SIZE = 8192
+
+
+def _extract_cwru_legacy_matrices(source: Path) -> Dict[str, bytes]:
+    """Extract X098 MAT-v5 matrix elements from the official CWRU 99.mat."""
+
+    content = source.read_bytes()
+    if len(content) < 128 or not content.startswith(b"MATLAB 5.0 MAT-file"):
+        raise DatasetDownloadError(f"CWRU source is not a MATLAB v5 file: {source}")
+
+    endian_indicator = content[126:128]
+    if endian_indicator == b"IM":
+        byte_order = "<"
+    elif endian_indicator == b"MI":
+        byte_order = ">"
+    else:
+        raise DatasetDownloadError(
+            f"CWRU source has an invalid MATLAB endian marker: {source}"
+        )
+
+    selected: Dict[str, bytes] = {}
+    offset = 128
+    while offset + 8 <= len(content):
+        data_type, payload_size = struct.unpack_from(byte_order + "II", content, offset)
+        element_end = offset + 8 + payload_size
+        if element_end > len(content):
+            raise DatasetDownloadError(f"CWRU MAT element is truncated: {source}")
+
+        if data_type == _MAT5_MI_MATRIX:
+            matrix_element = content[offset:element_end]
+        elif data_type == _MAT5_MI_COMPRESSED:
+            try:
+                matrix_element = zlib.decompress(content[offset + 8:element_end])
+            except zlib.error as exc:
+                raise DatasetDownloadError(
+                    f"Cannot decompress a CWRU MAT element in {source}."
+                ) from exc
+        else:
+            matrix_element = b""
+
+        # Array names occur in the small metadata prefix of each miMATRIX.
+        metadata_prefix = matrix_element[:256]
+        for name in _CWRU_LEGACY_MATRIX_NAMES:
+            if name.encode("ascii") in metadata_prefix:
+                if name in selected:
+                    raise DatasetDownloadError(
+                        f"CWRU source contains duplicate matrix {name}: {source}"
+                    )
+                selected[name] = matrix_element
+
+        # MATLAB/Scipy miCOMPRESSED elements are not padded; ordinary MAT-v5
+        # elements are aligned to an eight-byte boundary.
+        if data_type == _MAT5_MI_COMPRESSED:
+            offset = element_end
+        else:
+            offset = (element_end + 7) & ~7
+
+    missing = [name for name in _CWRU_LEGACY_MATRIX_NAMES if name not in selected]
+    if missing:
+        raise DatasetDownloadError(
+            f"CWRU source {source} is missing legacy matrices: {', '.join(missing)}"
+        )
+    return selected
+
+
+def _matlab_legacy_compress(data: bytes) -> bytes:
+    """Reproduce the chunked zlib stream written by the legacy MATLAB file."""
+
+    compressor = zlib.compressobj(
+        level=6,
+        method=zlib.DEFLATED,
+        wbits=zlib.MAX_WBITS,
+        memLevel=8,
+        strategy=zlib.Z_DEFAULT_STRATEGY,
+    )
+    pieces: List[bytes] = []
+    for start in range(0, len(data), _MATLAB_ZLIB_CHUNK_SIZE):
+        end = min(start + _MATLAB_ZLIB_CHUNK_SIZE, len(data))
+        pieces.append(compressor.compress(data[start:end]))
+        if end < len(data):
+            pieces.append(compressor.flush(zlib.Z_FULL_FLUSH))
+    pieces.append(compressor.flush(zlib.Z_FINISH))
+    return b"".join(pieces)
+
+
+def _write_cwru_legacy_normal(source: Path, destination: Path) -> None:
+    """Create the historical LADDER 1750 normal MAT file byte-for-byte."""
+
+    matrices = _extract_cwru_legacy_matrices(source)
+    output = bytearray(_CWRU_LEGACY_MAT_HEADER)
+    for name in _CWRU_LEGACY_MATRIX_NAMES:
+        compressed = _matlab_legacy_compress(matrices[name])
+        output.extend(struct.pack("<II", _MAT5_MI_COMPRESSED, len(compressed)))
+        output.extend(compressed)
+
+    partial = destination.with_name(destination.name + ".part")
+    try:
+        partial.write_bytes(output)
+        if (
+            partial.stat().st_size != _CWRU_LEGACY_SPECIAL_SIZE
+            or _sha256_file(partial) != _CWRU_LEGACY_SPECIAL_SHA256
+        ):
+            raise DatasetDownloadError(
+                "Generated CWRU legacy 1750 normal file failed exact verification."
+            )
+        os.replace(partial, destination)
+    finally:
+        if partial.exists():
+            partial.unlink()
+
 
 def _download_cwru(target: Path, cache: Path, keep_archive: bool) -> None:
     _require_empty_install_target(target)
+    variant = _cwru_variant()
+    print(f"Preparing CWRU_10 variant: {variant}")
     source_cache = cache / "CWRU_10"
     source_cache.mkdir(parents=True, exist_ok=True)
     cached_files: List[Path] = []
@@ -500,24 +707,30 @@ def _download_cwru(target: Path, cache: Path, keep_archive: bool) -> None:
         staged = Path(temp_name) / "CWRU_10"
         staged.mkdir()
 
-        # The legacy preprocessor has a special case for the first selected
-        # load.  This ordering preserves its expected 40-file layout and class
-        # assignments without changing preprocessing code.
-        conditions = list(_CWRU_CONDITIONS)
-        faults = conditions[1:]
-        for load_index in range(4):
-            ordered = faults + conditions[:1] if load_index == 0 else conditions
-            for order, (label, file_ids) in enumerate(ordered):
+        # Keep the original LADDER naming exactly: e.g.
+        #   1730-0.000-Normal.mat
+        #   1730-0.007-Ball.mat
+        #   ...
+        #   1797-0.021-OuterRace6.mat
+        # The source file IDs remain the same official 12-kHz drive-end files.
+        for load_index, rpm in enumerate(_CWRU_RPMS):
+            for label, file_ids in _CWRU_CONDITIONS:
                 file_id = file_ids[load_index]
                 cached_file = _download_url(
                     f"https://engineering.case.edu/sites/default/files/{file_id}.mat",
                     source_cache / f"{file_id}.mat",
                 )
                 cached_files.append(cached_file)
-                shutil.copy2(cached_file, staged / f"{load_index}_{order:02d}_{label}.mat")
+                output_file = staged / f"{rpm}-{label}.mat"
+                if variant == "legacy" and file_id == 99:
+                    _write_cwru_legacy_normal(cached_file, output_file)
+                else:
+                    shutil.copy2(cached_file, output_file)
 
         if not _cwru_ready(staged):
-            raise DatasetDownloadError("CWRU download did not produce the expected 40 MAT files.")
+            raise DatasetDownloadError(
+                f"CWRU {variant} download did not produce the expected verified 40 MAT files."
+            )
         _install_directory(staged, target)
 
     if not keep_archive:
@@ -862,8 +1075,8 @@ def _download_pu(target: Path, cache: Path, keep_archive: bool) -> None:
     # cannot extract the provider's RAR format.
     _rar_command(cache / "PU" / "probe.rar", cache / "PU" / "probe", "PU")
     print(
-        "PU notice: the selected official archives are about 2.2 GB compressed and the "
-        "dataset is licensed for non-commercial use; cite the data provider."
+        "PU notice: downloading the complete 32-bearing official dataset requires "
+        "several GB of compressed archives; allow ample disk space and cite the data provider."
     )
     target.mkdir(parents=True, exist_ok=True)
     unexpected = [item.name for item in target.iterdir() if item.name not in _PU_LABELS]
@@ -936,19 +1149,23 @@ def _copy_ims_timestamp_files(source_root: Path, destination: Path) -> int:
 
 
 def _extract_ims_subset(archive: Path, staged: Path) -> None:
-    """Extract the IMS 2nd and 3rd tests from NASA's nested Bearings archive.
+    """Extract all three IMS tests from NASA's nested Bearings archive.
 
     The current NASA/PHM ``4. Bearings.zip`` contains ``IMS.7z`` rather than
     the timestamp recordings directly.  ``IMS.7z`` in turn contains the
-    individual ``*_test.rar`` archives.  We intentionally expand only
-    ``2nd_test.rar`` and ``3rd_test.rar`` because those are the subsets used by
-    the current LADDER preprocessing code.
+    individual ``*_test.rar`` archives.  All three official test subsets are
+    expanded so the on-disk dataset is complete, even though the current LADDER
+    experiment uses only ``2nd_test`` and ``3rd_test``.
     """
 
     if not zipfile.is_zipfile(archive):
         raise DatasetDownloadError(f"The downloaded IMS file is not a valid ZIP archive: {archive}")
 
-    outputs = {"2nd_test": staged / "2nd_test", "3rd_test": staged / "3rd_test"}
+    outputs = {
+        "1st_test": staged / "1st_test",
+        "2nd_test": staged / "2nd_test",
+        "3rd_test": staged / "3rd_test",
+    }
     for directory in outputs.values():
         directory.mkdir(parents=True)
 
@@ -988,7 +1205,7 @@ def _extract_ims_subset(archive: Path, staged: Path) -> None:
             raise DatasetDownloadError(f"Failed to extract nested IMS.7z: {exc}") from exc
 
         counts: Dict[str, int] = {}
-        for subset in ("2nd_test", "3rd_test"):
+        for subset in ("1st_test", "2nd_test", "3rd_test"):
             # The canonical IMS.7z packages each test as a RAR archive.  Use a
             # recursive search so an additional top-level directory does not
             # break the downloader.
@@ -1030,7 +1247,7 @@ def _extract_ims_subset(archive: Path, staged: Path) -> None:
 
             counts[subset] = _copy_ims_timestamp_files(search_root, outputs[subset])
 
-    expected = {"2nd_test": 984, "3rd_test": 6324}
+    expected = _IMS_EXPECTED_COUNTS
     if counts != expected:
         raise DatasetDownloadError(
             f"Unexpected IMS archive contents after nested extraction: found {counts}, "
@@ -1040,11 +1257,57 @@ def _extract_ims_subset(archive: Path, staged: Path) -> None:
 
 
 def _download_ims(target: Path, cache: Path, keep_archive: bool) -> None:
-    _require_empty_install_target(target)
     print(
         "IMS notice: NASA's Bearings ZIP contains a nested IMS.7z/RAR package; "
-        "only 2nd_test and 3rd_test are expanded for LADDER."
+        "1st_test, 2nd_test, and 3rd_test are all expanded. "
+        "The current LADDER experiment still uses only 2nd_test and 3rd_test."
     )
+
+    # Support upgrading a dataset prepared by an older downloader that kept
+    # only 2nd_test and 3rd_test.  Complete existing subsets are preserved; an
+    # incomplete non-empty subset is never overwritten silently.
+    missing_subsets: List[str] = []
+    if target.exists():
+        if not target.is_dir():
+            raise DatasetDownloadError(f"IMS target exists but is not a directory: {target}")
+
+        unexpected = [
+            item.name for item in target.iterdir()
+            if item.name not in _IMS_EXPECTED_COUNTS
+        ]
+        if unexpected:
+            raise DatasetDownloadError(
+                f"Unexpected entries in {target}: {unexpected}. Refusing to mix IMS layouts."
+            )
+
+        for subset, expected_count in _IMS_EXPECTED_COUNTS.items():
+            directory = target / subset
+            if not directory.exists():
+                missing_subsets.append(subset)
+                continue
+            if not directory.is_dir():
+                raise DatasetDownloadError(
+                    f"IMS subset path exists but is not a directory: {directory}"
+                )
+            count = sum(
+                1 for item in directory.iterdir()
+                if item.is_file() and _IMS_TIMESTAMP.fullmatch(item.name)
+            )
+            if count == expected_count:
+                print(f"IMS {subset}: already present ({count} files)")
+                continue
+            if any(directory.iterdir()):
+                raise DatasetDownloadError(
+                    f"IMS subset {directory} is incomplete: found {count} timestamp files, "
+                    f"expected {expected_count}. Move it aside or complete it manually before retrying."
+                )
+            directory.rmdir()
+            missing_subsets.append(subset)
+    else:
+        missing_subsets = list(_IMS_EXPECTED_COUNTS)
+
+    if not missing_subsets:
+        return
 
     # NASA's current PCoE repository serves the IMS Bearings archive through
     # the PHM Society S3 mirror.  Keep a distinct cache filename so old legacy
@@ -1062,7 +1325,25 @@ def _download_ims(target: Path, cache: Path, keep_archive: bool) -> None:
         _extract_ims_subset(archive, staged)
         if not _ims_ready(staged):
             raise DatasetDownloadError("IMS extraction did not produce the expected file counts.")
-        _install_directory(staged, target)
+
+        if target.exists():
+            # Incremental upgrade: install only missing subsets and leave valid
+            # existing subsets byte-for-byte untouched.
+            for subset in missing_subsets:
+                source = staged / subset
+                destination = target / subset
+                if destination.exists():
+                    raise DatasetDownloadError(
+                        f"Refusing to overwrite existing IMS subset during upgrade: {destination}"
+                    )
+                os.replace(source, destination)
+        else:
+            _install_directory(staged, target)
+
+    if not _ims_ready(target):
+        raise DatasetDownloadError(
+            f"IMS extraction completed but the final dataset is still incomplete at {target}."
+        )
     _cleanup_archive(archive, keep_archive)
 
 
@@ -1135,11 +1416,22 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="only report whether each dataset is complete",
     )
+    parser.add_argument(
+        "--cwru-variant",
+        choices=_CWRU_VARIANTS,
+        default=None,
+        help=(
+            "CWRU layout: legacy reproduces the historical LADDER file "
+            "(default); official keeps CWRU's unmodified 99.mat"
+        ),
+    )
     return parser
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _build_parser().parse_args(argv)
+    if args.cwru_variant is not None:
+        os.environ[_CWRU_VARIANT_ENV] = args.cwru_variant
     failed = False
     for requested_name in args.datasets:
         try:
